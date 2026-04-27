@@ -165,6 +165,89 @@ This hedges between Scenario A (linear speed) and Scenario B (log speed) without
 
 ---
 
+## Round 4 (Phase 2 — GOAT)
+
+**Products:** Same as Round 3 (HYDROGEL_PACK, VELVETFRUIT_EXTRACT, VEV ×10)  
+**Position Limits:** 200 / 200 / 300 per voucher  
+**Duration:** April 26 – April 28 (48 hours)  
+**VEV TTE:** 4 days at start of Round 4
+
+### Algorithmic: "Hello, I'm Mark"
+
+**New mechanic:** Counterparty IDs disclosed. `Trade.buyer` and `Trade.seller` fields now contain participant names (previously `None`). Analyze who is informed vs noise.
+
+| Status | Notes |
+|--------|-------|
+| Products | Unchanged from Round 3 |
+| Position limits | Unchanged |
+| Key new data | Counterparty IDs in trade data |
+| Strategy | TBD — analyze counterparty behavior for alpha |
+
+### Manual: "Vanilla Just Isn't Exotic Enough"
+
+Trade **Aether Crystal** + exotic options.
+
+**Underlying simulation (GBM):**
+| Parameter | Value |
+|-----------|-------|
+| Risk-neutral drift | 0 |
+| Annualized vol | **251%** |
+| Days/year | 252 |
+| Steps/day | 4 |
+| Contract size | **3,000** |
+| Simulations | 100 |
+
+**Exotic option types:**
+1. **Chooser Option** — 3-week expiry, buyer chooses call/put after 2 weeks
+2. **Binary Put** — all-or-nothing; pays fixed amount if underlying < strike at expiry
+3. **Knock-Out Put** — regular put that dies if underlying breaches knockout barrier
+
+| Status | Notes |
+|--------|-------|
+| Strategy | TBD — requires Monte Carlo pricing for exotics |
+
+---
+
+## Round 3 (Phase 2 — GOAT)
+
+**Products:** HYDROGEL_PACK (200), VELVETFRUIT_EXTRACT (200), VEV ×10 (300 each)  
+**Data:** 3 days (day 0, 1, 2) — `data/round3/`  
+**Duration:** April 25 – April 26 (48 hours)  
+**VEV TTE:** 5 days at start of Round 3 (8d at day 0, 7d at day 1, 6d at day 2 in historical data)
+
+### Algorithmic: "Options Require Decisions"
+
+**Product types:**
+- **Delta-1:** `HYDROGEL_PACK`, `VELVETFRUIT_EXTRACT` — similar to R1/R2 products
+- **Options:** 10 VEV vouchers with strikes: 4000, 4500, 5000, 5100, 5200, 5300, 5400, 5500, 6000, 6500
+
+**VEV voucher specs:**
+- European call options on VELVETFRUIT_EXTRACT
+- 7-day expiration from Round 1 (TTE decreases each round)
+- Cannot be exercised early; auto-liquidated at hidden fair value at round end
+- Inventory does NOT carry over between rounds
+
+| Status | Notes |
+|--------|-------|
+| Strategy | TBD — requires Black-Scholes or Monte Carlo for VEV pricing |
+| Historical data | 3 days available in `data/round3/` |
+
+### Manual: "The Celestial Gardeners' Guild"
+
+Buy Ornamental Bio-Pods from counterparties. Sell next day at fair price **920**.
+
+- Counterparty reserve prices: **uniform** on [670, 920] at **increments of 5**
+- Submit **2 bids** (b1 and b2)
+- b1 > reserve → trade at b1
+- b2 > reserve AND b2 > avg(all b2) → trade at b2
+- b2 > reserve BUT b2 ≤ avg(all b2) → trade at b2 with penalty: `((920 - avg_b2) / (920 - b2))^3`
+
+| Status | Notes |
+|--------|-------|
+| Strategy | TBD — game theory: need to estimate avg b2 from population |
+
+---
+
 ## Round 1
 
 **Products:** ASH_COATED_OSMIUM (pos limit 80), INTARIAN_PEPPER_ROOT (pos limit 80)  
@@ -190,6 +273,7 @@ Same products and dynamics as Round 2. The `trader.py` algorithm was developed o
 | `prosperity4btest` | 1.0.1 | Backtester |
 | Python | 3.13 | Runtime |
 | Round 2 data | `ROUND_2.zip` → `data/round2/` | 3 days of prices + trades |
+| Round 3 data | `data/round3/` | 3 days (day 0, 1, 2) |
 
 ### Backtester Commands
 ```bash
@@ -217,8 +301,11 @@ IMC-4/
 ├── data/round2/              # Extracted round 2 CSVs
 │   ├── prices_round_2_day_{-1,0,1}.csv
 │   └── trades_round_2_day_{-1,0,1}.csv
+├── data/round3/              # Round 3 data
+│   ├── prices_round_3_day_{0,1,2}.csv
+│   └── trades_round_3_day_{0,1,2}.csv
 └── docs/
     ├── imc_prosperity4_wiki.md
-    ├── rounds/{tutorial,round1,round2}.md
+    ├── rounds/{tutorial,round1,round2,round3,round4}.md
     └── elearning/{trading_glossary,programming_resources}.md
 ```

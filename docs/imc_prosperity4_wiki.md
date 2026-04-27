@@ -31,6 +31,8 @@ Ready? [Open Prosperity](https://prosperity.imc.com)
 - [Tutorial Round - "Simulator Practice"](rounds/tutorial_round.md) — EMERALDS, TOMATOES
 - [Round 1 - "Trading Groundwork"](rounds/round1.md) — ASH_COATED_OSMIUM, INTARIAN_PEPPER_ROOT
 - [Round 2 - "Growing Your Outpost"](rounds/round2.md) — Market Access Fee (bid()), Investment Challenge
+- [Round 3 - "Gloves Off"](rounds/round3.md) — HYDROGEL_PACK, VELVETFRUIT_EXTRACT, VEV options
+- [Round 4 - "The More The Merrier"](rounds/round4.md) — Counterparty IDs, Exotic options manual
 
 ---
 
@@ -84,9 +86,9 @@ If you manage to secure at least **200,000 XIRECs** by the end of trading Round 
 | Round 1 | April 14 | April 18 | ASH_COATED_OSMIUM, INTARIAN_PEPPER_ROOT |
 | Round 2 | April 18 | April 21 | Same + bid() for extra market access |
 | *Intermission* | *April 21* | *April 25* | *Leaderboard resets for Phase 2* |
-| Round 3 | April 25 | TBD | TBD |
-| Round 4 | TBD | TBD | TBD |
-| Round 5 | TBD | TBD | TBD |
+| Round 3 | April 25 | April 26 | HYDROGEL_PACK, VELVETFRUIT_EXTRACT, VEV options (×10) |
+| Round 4 | April 26 | April 28 | Same + counterparty IDs; Exotic options manual |
+| Round 5 | April 28 | April 30 | TBD |
 
 ### Phase Structure
 - **Phase 1** (Rounds 1 & 2): Qualifier — must reach **200,000 XIRECs** to advance
