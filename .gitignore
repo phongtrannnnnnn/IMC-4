@@ -1,0 +1,7 @@
+# Backtest logs
+backtests/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo

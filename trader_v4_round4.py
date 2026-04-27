@@ -43,20 +43,20 @@ class Trader:
     HP_CP_BIAS = 2.5
 
     # VELVETFRUIT_EXTRACT parameters
-    VE_SPREAD_HALF = 3         # ±3 from fair (sweep: wider = more edge per fill)
-    VE_SKEW_COEFF = 0.05       # inventory skew
-    VE_QUOTE_SIZE = 3          # small size per level
-    VE_EMA_SPAN = 15           # EMA(15) slightly faster than 20
+    VE_SPREAD_HALF = 2         # quotes at fair-2 and fair+3 (5-tick spread)
+    VE_SKEW_COEFF = 0.05       # light skew — simulation showed 0.05 optimal
+    VE_QUOTE_SIZE = 3          # small size per level — key to avoiding adverse selection
+    VE_EMA_SPAN = 20           # EMA(20) for fair value
 
     # VEV parameters
-    VEV_DEEP_ITM = {4000}         # Use VE-oracle pricing (TV=0, wide spread)
-    VEV_DEEP_HALF = 7             # ±7 inside the 21-tick market spread
-    VEV_ATM = {5000, 5100, 5200, 5300}  # Mid-based MM
-    VEV_ATM_TAKE = 3.0
-    VEV_ATM_QUOTE = 2.0
-    VEV_SIZE = 5                  # small per level
-    VEV_MAX_POS = 50              # hard cap
-    VEV_SKEW = 0.10               # inventory skew
+    VEV_TTE0 = 4.0
+    VEV_TPD = 1_000_000
+    VEV_BASE_VOL = 0.16
+    VEV_TAKE_EDGE = 3.0        # only take clear mispricings
+    VEV_QUOTE_EDGE = 2.0       # wider quotes for safety
+    VEV_SIZE = 10              # small size to limit theta exposure
+    VEV_MAX_POS = 50           # hard cap, way below 300 limit
+    VEV_ACTIVE = {5000, 5100, 5200, 5300}
 
     WINDOW = 50
 
@@ -244,94 +244,55 @@ class Trader:
     # ═══════════════════════════════════════════════════════════
 
     def _vev(self, product, od, pos, mid, ts, s, ve_mid, strike, lim):
-        """
-        VEV strategy split by moneyness:
-        - Deep ITM (4000): VE-oracle market making on the wide 21-tick spread.
-          Fair = VE_mid - strike (time value ≈ 0). Post inside the market spread.
-        - ATM (5000-5300): Simple mid-based market making.
-        """
+        """VEV: Market-make around mid. Market already prices in correct TTE."""
         orders = []
         MAX = min(self.VEV_MAX_POS, lim)
 
-        if strike in self.VEV_DEEP_ITM:
-            # ── Deep ITM: VE-oracle pricing ──
-            fair = ve_mid - strike  # intrinsic value (TV ≈ 0)
-            if fair < 1.0:
-                return orders
-
-            skew = -pos * self.VEV_SKEW
-            our_bid = int(fair - self.VEV_DEEP_HALF + skew)
-            our_ask = int(fair + self.VEV_DEEP_HALF + skew) + 1
-
-            # Post quotes inside the wide market spread
-            bc = MAX - pos
-            sc = MAX + pos
-            sz = self.VEV_SIZE
-            lb = min(sz, bc)
-            ls = min(sz, sc)
-            if lb > 0 and our_bid >= 1:
-                orders.append(Order(product, our_bid, lb))
-            if ls > 0:
-                orders.append(Order(product, our_ask, -ls))
-
-            # Also take if book crosses our fair significantly
-            ba = min(od.sell_orders)
-            if fair - ba > self.VEV_DEEP_HALF and pos < MAX:
-                qty = min(-od.sell_orders[ba], MAX - pos, sz)
-                if qty > 0:
-                    orders.append(Order(product, ba, qty))
-
-            bb = max(od.buy_orders)
-            if bb - fair > self.VEV_DEEP_HALF and pos > -MAX:
-                qty = min(od.buy_orders[bb], MAX + pos, sz)
-                if qty > 0:
-                    orders.append(Order(product, bb, -qty))
-
-        elif strike in self.VEV_ATM:
-            # ── ATM: simple mid-based MM ──
-            if mid < 2.0:
-                return orders
-
-            fair = mid
-
-            # Take mispricings
-            ba = min(od.sell_orders)
-            if fair - ba > self.VEV_ATM_TAKE and pos < MAX:
-                qty = min(-od.sell_orders[ba], MAX - pos, self.VEV_SIZE)
-                if qty > 0:
-                    orders.append(Order(product, ba, qty))
-                    pos += qty
-
-            bb = max(od.buy_orders)
-            if bb - fair > self.VEV_ATM_TAKE and pos > -MAX:
-                qty = min(od.buy_orders[bb], MAX + pos, self.VEV_SIZE)
-                if qty > 0:
-                    orders.append(Order(product, bb, -qty))
-                    pos -= qty
-
-            # Quote around mid
-            skew = -pos * self.VEV_SKEW
-            qb = int(fair - self.VEV_ATM_QUOTE + skew)
-            qa = max(qb + 1, int(fair + self.VEV_ATM_QUOTE + skew) + 1)
-            inv_f = max(0.2, 1.0 - abs(pos) / MAX)
-            sz = max(2, int(self.VEV_SIZE * inv_f))
-
-            bq = min(sz, MAX - pos)
-            sq = min(sz, MAX + pos)
-            if bq > 0 and qb >= 1:
-                orders.append(Order(product, qb, bq))
-            if sq > 0:
-                orders.append(Order(product, qa, -sq))
-        else:
+        if strike not in self.VEV_ACTIVE:
             return orders
 
-        # EOD flatten
+        # Skip penny options — no edge
+        if mid < 2.0:
+            return orders
+
+        # Use BS as secondary signal to detect mispricing vs market
+        # But primarily trust the market mid
+        fair = mid
+
+        # Take clearly mispriced offers
+        ba = min(od.sell_orders)
+        if fair - ba > self.VEV_TAKE_EDGE and pos < MAX:
+            qty = min(-od.sell_orders[ba], MAX - pos, self.VEV_SIZE)
+            if qty > 0:
+                orders.append(Order(product, ba, qty))
+                pos += qty
+
+        bb = max(od.buy_orders)
+        if bb - fair > self.VEV_TAKE_EDGE and pos > -MAX:
+            qty = min(od.buy_orders[bb], MAX + pos, self.VEV_SIZE)
+            if qty > 0:
+                orders.append(Order(product, bb, -qty))
+                pos -= qty
+
+        # Quote around mid with edge
+        qb = int(fair - self.VEV_QUOTE_EDGE)
+        qa = max(qb + 1, int(fair + self.VEV_QUOTE_EDGE) + 1)
+        inv_f = max(0.2, 1.0 - abs(pos) / MAX)
+        sz = max(2, int(self.VEV_SIZE * inv_f))
+
+        bq = min(sz, MAX - pos)
+        sq = min(sz, MAX + pos)
+        if bq > 0 and qb >= 1:
+            orders.append(Order(product, qb, bq))
+        if sq > 0:
+            orders.append(Order(product, qa, -sq))
+
+        # EOD
         if ts > 985000 and abs(pos) > 3:
-            fair_eod = (ve_mid - strike) if strike in self.VEV_DEEP_ITM else mid
             if pos > 0:
-                orders.append(Order(product, max(1, int(fair_eod - 1)), -pos))
+                orders.append(Order(product, max(1, int(fair - 1)), -pos))
             else:
-                orders.append(Order(product, int(fair_eod + 1), -pos))
+                orders.append(Order(product, int(fair + 1), -pos))
 
         return orders
 

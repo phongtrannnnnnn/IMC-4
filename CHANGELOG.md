@@ -174,37 +174,106 @@ This hedges between Scenario A (linear speed) and Scenario B (log speed) without
 
 ### Algorithmic: "Hello, I'm Mark"
 
-**New mechanic:** Counterparty IDs disclosed. `Trade.buyer` and `Trade.seller` fields now contain participant names (previously `None`). Analyze who is informed vs noise.
+### Algorithmic: "Hello, I'm Mark"
 
-| Status | Notes |
-|--------|-------|
-| Products | Unchanged from Round 3 |
-| Position limits | Unchanged |
-| Key new data | Counterparty IDs in trade data |
-| Strategy | TBD — analyze counterparty behavior for alpha |
+**New mechanic:** Counterparty IDs disclosed. `Trade.buyer` and `Trade.seller` fields now contain participant names (previously `None`).
 
-### Manual: "Vanilla Just Isn't Exotic Enough"
+#### Data Analysis
 
-Trade **Aether Crystal** + exotic options.
+**HYDROGEL_PACK:**
+- Mean-reversion around ~10,000, spread ~16 ticks (identical structure to ACO from R2)
+- Std ~32-38 per day, autocorr(1) = -0.124, negligible trend
+- Position limit 200 (vs 80 for ACO)
 
-**Underlying simulation (GBM):**
-| Parameter | Value |
-|-----------|-------|
-| Risk-neutral drift | 0 |
-| Annualized vol | **251%** |
-| Days/year | 252 |
-| Steps/day | 4 |
-| Contract size | **3,000** |
-| Simulations | 100 |
+**VELVETFRUIT_EXTRACT:**
+- Oscillates around ~5,240-5,260, spread ~5 ticks (tight)
+- Std ~15-19 per day, autocorr(1) = -0.16, no trend
+- Position limit 200
 
-**Exotic option types:**
-1. **Chooser Option** — 3-week expiry, buyer chooses call/put after 2 weeks
-2. **Binary Put** — all-or-nothing; pays fixed amount if underlying < strike at expiry
-3. **Knock-Out Put** — regular put that dies if underlying breaches knockout barrier
+**VEV Vouchers (European Calls on VE):**
+- 10 strikes: 4000–6500
+- Deep ITM (4000, 4500): Track VE 1:1, spread ~16-21
+- ATM (5000-5300): Spread ~4-6, std ~12-18
+- OTM (5400, 5500): Spread ~1, cheap
+- Far OTM (6000, 6500): Stuck at 0.5, dead
+- TTE: data day 1=6d, day 2=5d, day 3=4d, live=4d
 
-| Status | Notes |
-|--------|-------|
-| Strategy | TBD — requires Monte Carlo pricing for exotics |
+#### Counterparty Intelligence
+
+7 unique participants identified: Mark 01, 14, 22, 38, 49, 55, 67
+
+| Participant | Role | Evidence |
+|-------------|------|----------|
+| **Mark 14** | Informed on HP | +7,985 total edge, 1,003 trades, +8.0 avg edge |
+| **Mark 38** | Noise on HP | -8,058 total edge, 1,022 trades, -7.9 avg edge |
+| **Mark 55** | Noise on VE | -2,973 total edge, 1,198 trades, -2.5 avg edge |
+| **Mark 01** | VEV MM (long side) | Net +1,042 VEV_5500, +1,105 VEV_6000/6500 |
+| **Mark 22** | VEV counterparty (short) | Net -1,069 VEV_5500, provides liquidity to Mark 01 |
+| **Mark 67** | VE accumulator | Net +1,510 VE, 165 large trades |
+| **Mark 49** | VE dumper | Net -956 VE, 122 trades |
+
+#### Strategy — v3 (Final)
+
+**HYDROGEL_PACK — Counterparty-Informed Mean-Reversion MM:**
+- Adapted from ACO strategy (similar market microstructure)
+- EMA(12)-based fair value + AR(1) prediction (coeff=-0.12) + book imbalance
+- Counterparty signals: Follow Mark 14 direction (±2.5 fair bias), fade Mark 38
+- Multi-level quoting: L1 at spread=7, L2 at offset=4
+- Base size 50, inventory skew 0.04/unit, cooldown 100
+- EOD liquidation at ts > 985,000
+
+**VELVETFRUIT_EXTRACT — Disabled (Price Tracking Only):**
+- Market-making structurally unprofitable in 5-tick spread
+- Tested: full MM (-33k), take-only (-10k), minimal quotes (-8k) — all negative
+- Root cause: adverse selection in tight spread with 15-19 std daily moves
+- Kept price tracking for VEV vol estimation
+
+**VEV Vouchers — Mid-Based Market Making (ATM Strikes Only):**
+- Active strikes: 5000, 5100, 5200, 5300
+- Market-make around mid with take_edge=3, quote_edge=2
+- Max position capped at 50 (well below 300 limit) to control theta exposure
+- Base size 10 with inventory-proportional sizing
+- Skip penny options (mid < 2.0)
+
+#### Techniques Tested but Rejected
+
+| Technique | Result | Reason |
+|-----------|--------|--------|
+| VE full market-making (sz=40) | -11k/day | Adverse selection in 5-tick spread |
+| VE take-only (threshold=3) | -3k/day | Still losing on inventory accumulation |
+| VE minimal quotes (sz=5) | -2k/day | Even 5-lot quotes get adversely selected |
+| VEV BS-based pricing | -12k day 3 | TTE calculation wrong across backtester days |
+| VEV position limit 300 | -75k day 3 | Theta decay destroys large positions |
+| HP anchor at 10,000 | 0 P&L | Anchor was wrong — price oscillates around varying mean |
+| HP/VE spread too tight | 0 P&L | Backtester "exceeded limit of 50" = position limit, not order count |
+
+#### Backtester Notes
+
+> **Critical**: The backtester defaults position limits to 50 for unknown products. Must use `--limit` flags:
+> ```bash
+> prosperity4btest trader.py 4 --data /mnt/d/workspace/IMC-4/data --no-progress \
+>   --limit HYDROGEL_PACK:200 --limit VELVETFRUIT_EXTRACT:200 \
+>   --limit VEV_4000:300 --limit VEV_4500:300 --limit VEV_5000:300 \
+>   --limit VEV_5100:300 --limit VEV_5200:300 --limit VEV_5300:300 \
+>   --limit VEV_5400:300 --limit VEV_5500:300 --limit VEV_6000:300 \
+>   --limit VEV_6500:300
+> ```
+
+#### Final Performance
+
+| Metric | Standard Fills | Conservative Fills |
+|--------|---------------|-------------------|
+| **Total P&L** | **+11,653** | **+8,102** |
+| **Sharpe (ann.)** | **17.29** | **10.06** |
+| **Sortino** | **∞** | **9.83** |
+| **Max Drawdown** | 6,342 (1.7%) | 5,570 (1.9%) |
+| **All days +** | ✅ 3/3 | ❌ 2/3 (day 2: -476) |
+
+| Day | HP | VE | VEV | Total |
+|-----|------|------|------|-------|
+| 1 | +8,000 | 0 | 0 | +8,000 |
+| 2 | +1,709 | 0 | 0 | +1,709 |
+| 3 | +1,944 | 0 | 0 | +1,944 |
 
 ---
 
@@ -269,22 +338,25 @@ Same products and dynamics as Round 2. The `trader.py` algorithm was developed o
 ## Environment & Tools
 
 | Tool | Version | Purpose |
-|------|---------|---------|
+|------|---------|---------| 
 | `prosperity4btest` | 1.0.1 | Backtester |
 | Python | 3.13 | Runtime |
-| Round 2 data | `ROUND_2.zip` → `data/round2/` | 3 days of prices + trades |
+| Round 2 data | `ROUND_2.zip` | 3 days of prices + trades |
 | Round 3 data | `data/round3/` | 3 days (day 0, 1, 2) |
+| Round 4 data | `ROUND_4.zip` | 3 days (day 1, 2, 3) + counterparty IDs |
 
 ### Backtester Commands
 ```bash
-# Round 2
-prosperity4btest trader.py 2 --data /mnt/d/workspace/IMC-4/data --no-progress
+# Round 4 (MUST use --limit flags)
+prosperity4btest trader.py 4 --data /mnt/d/workspace/IMC-4/data --no-progress \
+  --limit HYDROGEL_PACK:200 --limit VELVETFRUIT_EXTRACT:200 \
+  --limit VEV_4000:300 --limit VEV_4500:300 --limit VEV_5000:300 \
+  --limit VEV_5100:300 --limit VEV_5200:300 --limit VEV_5300:300 \
+  --limit VEV_5400:300 --limit VEV_5500:300 --limit VEV_6000:300 \
+  --limit VEV_6500:300
 
-# Round 1
-prosperity4btest trader.py 1 --no-progress
-
-# Conservative fills
-prosperity4btest trader.py 2 --data /mnt/d/workspace/IMC-4/data --match-trades worse --no-progress
+# Round 2 (old version)
+prosperity4btest trader_v2_round2.py 2 --data /mnt/d/workspace/IMC-4/data --no-progress
 ```
 
 ---
@@ -293,19 +365,16 @@ prosperity4btest trader.py 2 --data /mnt/d/workspace/IMC-4/data --match-trades w
 
 ```
 IMC-4/
-├── trader.py                 # Final algorithm (SUBMIT THIS)
-├── uploaded_version.py       # Original baseline
+├── trader.py                 # Current algorithm (R4 v3)
+├── trader_v3_round4.py       # R4 version backup
+├── trader_v2_round2.py       # R2 version backup (ACO + IPR)
+├── uploaded_version.py       # Original baseline (R2)
+├── previous_version.py       # Early R2 version
 ├── datamodel.py              # Data model (synced with wiki)
 ├── CHANGELOG.md              # This file
-├── ROUND_2.zip               # Raw round 2 data
 ├── data/round2/              # Extracted round 2 CSVs
-│   ├── prices_round_2_day_{-1,0,1}.csv
-│   └── trades_round_2_day_{-1,0,1}.csv
 ├── data/round3/              # Round 3 data
-│   ├── prices_round_3_day_{0,1,2}.csv
-│   └── trades_round_3_day_{0,1,2}.csv
-└── docs/
-    ├── imc_prosperity4_wiki.md
-    ├── rounds/{tutorial,round1,round2,round3,round4}.md
-    └── elearning/{trading_glossary,programming_resources}.md
+├── data/round4/              # Round 4 data (with counterparty IDs)
+└── docs/                     # Documentation
 ```
+

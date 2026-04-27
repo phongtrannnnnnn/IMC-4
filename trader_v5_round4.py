@@ -43,10 +43,10 @@ class Trader:
     HP_CP_BIAS = 2.5
 
     # VELVETFRUIT_EXTRACT parameters
-    VE_SPREAD_HALF = 3         # ±3 from fair (sweep: wider = more edge per fill)
-    VE_SKEW_COEFF = 0.05       # inventory skew
-    VE_QUOTE_SIZE = 3          # small size per level
-    VE_EMA_SPAN = 15           # EMA(15) slightly faster than 20
+    VE_SPREAD_HALF = 2         # quotes at fair-2 and fair+3 (5-tick spread)
+    VE_SKEW_COEFF = 0.05       # light skew — simulation showed 0.05 optimal
+    VE_QUOTE_SIZE = 3          # small size per level — key to avoiding adverse selection
+    VE_EMA_SPAN = 20           # EMA(20) for fair value
 
     # VEV parameters
     VEV_DEEP_ITM = {4000}         # Use VE-oracle pricing (TV=0, wide spread)
