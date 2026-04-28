@@ -1,29 +1,14 @@
 """
-Round 4 Trader v10 — Data-driven optimizations
-===============================================
-Based on 4 official platform runs (518982, v7, v8, v9).
-
-CHANGES FROM v9 (25,204):
-1. HP: Switch to inside-best quoting (518982-style). Our EMA+AR fair±7
-   accumulates directional inventory that loses on mean-reversion (HP drops
-   39 pts from t=60k to t=100k, costing -2.3k). Inside-best avoids this.
-   Evidence: 518982 HP = +883 across ALL phases vs our -429.
-2. HP EOD: Use TTE-based winding_down (tte < 1.1) instead of timestamp.
-   Reduces size to 15 when near expiry. More robust than fixed t=90k.
-3. VEV: Add Mark 01 activity detection → tighter taker_edge (0.55x).
-   Evidence: 518982 gets +5.5k on VEV_5000 vs our +2.5k. The difference
-   is tighter buying when Mark 01 is actively selling options.
-4. VEV: Add VEV velocity protection → widen edge during fast moves.
-   Evidence: 518982 uses VEV_VEL_WARN=5, VEV_VEL_STOP=10 to protect
-   against stale quotes during price jumps.
-5. VEV: Adaptive opt_sell edge (1.1 init, 0.25 floor, 3.0 ceiling).
-   Narrows when fill_rate low, widens during velocity.
+Round 4 Trader v13 — Combined optimizations
+============================================
+v12 baseline (26,309) + tighter VEV_5000 taker + Mark 67/55 VE signals.
 """
 
 from datamodel import OrderDepth, TradingState, Order
 from typing import List, Dict, Optional, Tuple
 import json
 import math
+import numpy as np
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Black-Scholes
@@ -219,7 +204,7 @@ class Trader:
             if K in VEV_DEEP_ITM:
                 result[sym] = self._vev_deep(sym, od, pos, ve_fair, K, lim, ts)
             elif K in VEV_ATM or K in VEV_NTM:
-                pos_reserve = 60 if winding_down else 30
+                pos_reserve = 60 if winding_down else (20 if K == 5000 else 30)
                 result[sym] = self._vev_atm(
                     sym, od, pos, ve_fair, K, lim, tte,
                     opt_sell, vev_velocity, allow_passive,
@@ -237,7 +222,7 @@ class Trader:
         # total_delta is our aggregate option delta (negative when short calls).
         # We bias VE position to partially hedge: go LONG VE when short delta.
         result["VELVETFRUIT_EXTRACT"] = self._ve(
-            state, ve_fair, total_delta
+            state, ve_fair, total_delta, flags
         )
 
         # ── Persist state ─────────────────────────────────────────
@@ -259,6 +244,8 @@ class Trader:
         flags = {
             "m38_buy_hp": False, "m38_sell_hp": False,
             "m01_active": False,
+            "m67_buy_ve": False, "m49_sell_ve": False,
+            "m55_buy_ve": False, "m55_sell_ve": False,
         }
         if not mt:
             return flags
@@ -282,6 +269,15 @@ class Trader:
                     break
             if flags["m01_active"]:
                 break
+
+        # VE counterparties: Mark 67 (momentum, Sharpe 2.05), Mark 55 (losing bot)
+        for t in mt.get("VELVETFRUIT_EXTRACT", []):
+            b = getattr(t, 'buyer', '') or ''
+            sl = getattr(t, 'seller', '') or ''
+            if "Mark 67" in b: flags["m67_buy_ve"] = True
+            if "Mark 49" in sl: flags["m49_sell_ve"] = True
+            if "Mark 55" in b: flags["m55_buy_ve"] = True
+            if "Mark 55" in sl: flags["m55_sell_ve"] = True
 
         return flags
 
@@ -401,7 +397,7 @@ class Trader:
     VE_SPREAD_HALF = 2
     VE_QUOTE_SIZE = 5
 
-    def _ve(self, state, fair, total_delta):
+    def _ve(self, state, fair, total_delta, flags):
         sym = "VELVETFRUIT_EXTRACT"
         od = state.order_depths.get(sym)
         if od is None or not od.buy_orders or not od.sell_orders:
@@ -410,32 +406,28 @@ class Trader:
         limit = POS_LIMITS[sym]
         orders: List[Order] = []
 
-        # Delta hedge target: if total_delta = -758, want VE pos = +200
-        # Clamp to VE limit. Negative total_delta → want LONG VE.
-        hedge_target = _iclamp(int(-total_delta), -limit, limit)
-        hedge_gap = hedge_target - pos  # positive = want to buy more
+        bb = max(od.buy_orders)
+        ba = min(od.sell_orders)
 
-        # Quote at fair prices (no skew — skewing costs -597/day on v11)
+        # Delta hedge target
+        hedge_target = _iclamp(int(-total_delta), -limit, limit)
+        hedge_gap = hedge_target - pos
+
         bp = int(fair - self.VE_SPREAD_HALF)
         sp = int(fair + self.VE_SPREAD_HALF) + 1
 
         bc = limit - pos
         sc = limit + pos
 
-        # Size-based hedging: bias toward hedge direction
-        # hedge_gap > 0 → larger bids, smaller asks (accumulate long)
-        # hedge_gap < 0 → larger asks, smaller bids (accumulate short)
+        # Size-based hedging
         base_sz = self.VE_QUOTE_SIZE
         if hedge_gap > 20:
-            # Want to buy: large bid, small ask
             bid_sz = min(base_sz + min(abs(hedge_gap) // 20, 10), bc)
             ask_sz = min(max(1, base_sz - 2), sc)
         elif hedge_gap < -20:
-            # Want to sell: small bid, large ask
             bid_sz = min(max(1, base_sz - 2), bc)
             ask_sz = min(base_sz + min(abs(hedge_gap) // 20, 10), sc)
         else:
-            # Near target: symmetric
             bid_sz = min(base_sz, bc)
             ask_sz = min(base_sz, sc)
 
@@ -443,6 +435,20 @@ class Trader:
             orders.append(Order(sym, bp, bid_sz))
         if ask_sz > 0:
             orders.append(Order(sym, sp, -ask_sz))
+
+        # Mark 67 momentum: when M67 buys VE, price rises next tick
+        # Taker buy to ride the move (518982 Sharpe 2.05, 95.8% win)
+        if flags.get("m67_buy_ve") and bc > 0:
+            qty = min(15, bc)
+            orders.append(Order(sym, ba, qty))
+
+        # Fade Mark 55 (losing momentum bot)
+        if flags.get("m55_buy_ve") and not flags.get("m55_sell_ve") and sc > 0:
+            qty = min(10, sc)
+            orders.append(Order(sym, round(fair + 2), -qty))
+        elif flags.get("m55_sell_ve") and not flags.get("m55_buy_ve") and bc > 0:
+            qty = min(10, bc)
+            orders.append(Order(sym, round(fair - 2), qty))
 
         return orders
 
@@ -504,9 +510,9 @@ class Trader:
         elif delta < 0.03:
             taker_edge = 0.5
         else:
-            # v10: when Mark 01 is active, tighten buying (0.55x)
-            # Evidence: 518982 gets +5.5k on VEV_5000 vs our +2.5k
-            taker_edge = opt_sell * (0.55 if mark01_active else 1.0)
+            # v13: tighter when Mark 01 active (0.40x vs v10's 0.55x)
+            # 518982 gets +5.5k on VEV_5000 vs our +2.5k — need more fills
+            taker_edge = opt_sell * (0.40 if mark01_active else 1.0)
 
         buy_thresh = bs_fair - taker_edge
         sell_thresh = bs_fair + taker_edge

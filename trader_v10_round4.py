@@ -201,6 +201,9 @@ class Trader:
             state, hp_fair, hp_edge, flags, winding_down
         )
 
+        # ── VE orders ─────────────────────────────────────────────
+        result["VELVETFRUIT_EXTRACT"] = self._ve(state, ve_fair, ts)
+
         # ── VEV orders ────────────────────────────────────────────
         total_delta = 0.0
         snipe_mode = (vev_velocity >= VEV_VEL_STOP)
@@ -231,14 +234,6 @@ class Trader:
 
             delta = bs_delta(ve_fair, K, tte, SIGMA)
             total_delta += pos * delta
-
-        # ── VE orders (delta-hedge-aware) ─────────────────────────
-        # Must come AFTER VEV loop so total_delta is computed.
-        # total_delta is our aggregate option delta (negative when short calls).
-        # We bias VE position to partially hedge: go LONG VE when short delta.
-        result["VELVETFRUIT_EXTRACT"] = self._ve(
-            state, ve_fair, total_delta
-        )
 
         # ── Persist state ─────────────────────────────────────────
         return result, 0, json.dumps({
@@ -392,16 +387,14 @@ class Trader:
         return orders
 
     # ═══════════════════════════════════════════════════════════════════════
-    #  VELVETFRUIT_EXTRACT — Delta-hedge-aware quoting
-    #  Uses aggregate option delta to bias VE position toward hedging.
-    #  We can only hedge 26% of delta (200 VE limit vs ~758 option delta)
-    #  but that still reduces drawdowns by ~4k.
+    #  VELVETFRUIT_EXTRACT — raw wmid ±2
     # ═══════════════════════════════════════════════════════════════════════
 
     VE_SPREAD_HALF = 2
+    VE_SKEW_COEFF = 0.05
     VE_QUOTE_SIZE = 5
 
-    def _ve(self, state, fair, total_delta):
+    def _ve(self, state, fair, ts):
         sym = "VELVETFRUIT_EXTRACT"
         od = state.order_depths.get(sym)
         if od is None or not od.buy_orders or not od.sell_orders:
@@ -410,39 +403,20 @@ class Trader:
         limit = POS_LIMITS[sym]
         orders: List[Order] = []
 
-        # Delta hedge target: if total_delta = -758, want VE pos = +200
-        # Clamp to VE limit. Negative total_delta → want LONG VE.
-        hedge_target = _iclamp(int(-total_delta), -limit, limit)
-        hedge_gap = hedge_target - pos  # positive = want to buy more
-
-        # Quote at fair prices (no skew — skewing costs -597/day on v11)
-        bp = int(fair - self.VE_SPREAD_HALF)
-        sp = int(fair + self.VE_SPREAD_HALF) + 1
+        skew = -pos * self.VE_SKEW_COEFF
+        bp = int(fair - self.VE_SPREAD_HALF + skew)
+        sp = int(fair + self.VE_SPREAD_HALF + skew) + 1
 
         bc = limit - pos
         sc = limit + pos
+        sz = self.VE_QUOTE_SIZE
 
-        # Size-based hedging: bias toward hedge direction
-        # hedge_gap > 0 → larger bids, smaller asks (accumulate long)
-        # hedge_gap < 0 → larger asks, smaller bids (accumulate short)
-        base_sz = self.VE_QUOTE_SIZE
-        if hedge_gap > 20:
-            # Want to buy: large bid, small ask
-            bid_sz = min(base_sz + min(abs(hedge_gap) // 20, 10), bc)
-            ask_sz = min(max(1, base_sz - 2), sc)
-        elif hedge_gap < -20:
-            # Want to sell: small bid, large ask
-            bid_sz = min(max(1, base_sz - 2), bc)
-            ask_sz = min(base_sz + min(abs(hedge_gap) // 20, 10), sc)
-        else:
-            # Near target: symmetric
-            bid_sz = min(base_sz, bc)
-            ask_sz = min(base_sz, sc)
-
-        if bid_sz > 0:
-            orders.append(Order(sym, bp, bid_sz))
-        if ask_sz > 0:
-            orders.append(Order(sym, sp, -ask_sz))
+        lb = min(sz, bc)
+        ls = min(sz, sc)
+        if lb > 0:
+            orders.append(Order(sym, bp, lb))
+        if ls > 0:
+            orders.append(Order(sym, sp, -ls))
 
         return orders
 

@@ -410,39 +410,35 @@ class Trader:
         limit = POS_LIMITS[sym]
         orders: List[Order] = []
 
-        # Delta hedge target: if total_delta = -758, want VE pos = +200
+        # Delta hedge target: if total_delta = -758, we want VE pos = +200
         # Clamp to VE limit. Negative total_delta → want LONG VE.
         hedge_target = _iclamp(int(-total_delta), -limit, limit)
-        hedge_gap = hedge_target - pos  # positive = want to buy more
+        # Bias: how far we are from target
+        hedge_gap = hedge_target - pos
 
-        # Quote at fair prices (no skew — skewing costs -597/day on v11)
-        bp = int(fair - self.VE_SPREAD_HALF)
-        sp = int(fair + self.VE_SPREAD_HALF) + 1
+        # Skew pricing toward hedge direction
+        # hedge_gap > 0 → want to buy → lower our ask, raise our bid
+        skew = 0.0
+        if abs(hedge_gap) > 10:
+            skew = _fclamp(hedge_gap * 0.02, -2.0, 2.0)
+
+        bp = int(fair - self.VE_SPREAD_HALF + skew)
+        sp = int(fair + self.VE_SPREAD_HALF + skew) + 1
 
         bc = limit - pos
         sc = limit + pos
 
-        # Size-based hedging: bias toward hedge direction
-        # hedge_gap > 0 → larger bids, smaller asks (accumulate long)
-        # hedge_gap < 0 → larger asks, smaller bids (accumulate short)
-        base_sz = self.VE_QUOTE_SIZE
-        if hedge_gap > 20:
-            # Want to buy: large bid, small ask
-            bid_sz = min(base_sz + min(abs(hedge_gap) // 20, 10), bc)
-            ask_sz = min(max(1, base_sz - 2), sc)
-        elif hedge_gap < -20:
-            # Want to sell: small bid, large ask
-            bid_sz = min(max(1, base_sz - 2), bc)
-            ask_sz = min(base_sz + min(abs(hedge_gap) // 20, 10), sc)
-        else:
-            # Near target: symmetric
-            bid_sz = min(base_sz, bc)
-            ask_sz = min(base_sz, sc)
+        # Scale size based on hedge urgency
+        sz = self.VE_QUOTE_SIZE
+        if abs(hedge_gap) > 50:
+            sz = min(15, sz + abs(hedge_gap) // 25)  # up to 15
 
-        if bid_sz > 0:
-            orders.append(Order(sym, bp, bid_sz))
-        if ask_sz > 0:
-            orders.append(Order(sym, sp, -ask_sz))
+        lb = min(sz, bc)
+        ls = min(sz, sc)
+        if lb > 0:
+            orders.append(Order(sym, bp, lb))
+        if ls > 0:
+            orders.append(Order(sym, sp, -ls))
 
         return orders
 

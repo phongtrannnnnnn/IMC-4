@@ -174,106 +174,134 @@ This hedges between Scenario A (linear speed) and Scenario B (log speed) without
 
 ### Algorithmic: "Hello, I'm Mark"
 
-### Algorithmic: "Hello, I'm Mark"
-
 **New mechanic:** Counterparty IDs disclosed. `Trade.buyer` and `Trade.seller` fields now contain participant names (previously `None`).
 
-#### Data Analysis
-
-**HYDROGEL_PACK:**
-- Mean-reversion around ~10,000, spread ~16 ticks (identical structure to ACO from R2)
-- Std ~32-38 per day, autocorr(1) = -0.124, negligible trend
-- Position limit 200 (vs 80 for ACO)
-
-**VELVETFRUIT_EXTRACT:**
-- Oscillates around ~5,240-5,260, spread ~5 ticks (tight)
-- Std ~15-19 per day, autocorr(1) = -0.16, no trend
-- Position limit 200
-
-**VEV Vouchers (European Calls on VE):**
-- 10 strikes: 4000–6500
-- Deep ITM (4000, 4500): Track VE 1:1, spread ~16-21
-- ATM (5000-5300): Spread ~4-6, std ~12-18
-- OTM (5400, 5500): Spread ~1, cheap
-- Far OTM (6000, 6500): Stuck at 0.5, dead
-- TTE: data day 1=6d, day 2=5d, day 3=4d, live=4d
+> [!IMPORTANT]
+> Local backtester diverges significantly from official platform. All P&L below is from **official platform uploads**. The backtester remains useful only for syntax/import validation.
 
 #### Counterparty Intelligence
 
-7 unique participants identified: Mark 01, 14, 22, 38, 49, 55, 67
+7 unique participants confirmed in v12 trade history:
 
-| Participant | Role | Evidence |
-|-------------|------|----------|
-| **Mark 14** | Informed on HP | +7,985 total edge, 1,003 trades, +8.0 avg edge |
-| **Mark 38** | Noise on HP | -8,058 total edge, 1,022 trades, -7.9 avg edge |
-| **Mark 55** | Noise on VE | -2,973 total edge, 1,198 trades, -2.5 avg edge |
-| **Mark 01** | VEV MM (long side) | Net +1,042 VEV_5500, +1,105 VEV_6000/6500 |
-| **Mark 22** | VEV counterparty (short) | Net -1,069 VEV_5500, provides liquidity to Mark 01 |
-| **Mark 67** | VE accumulator | Net +1,510 VE, 165 large trades |
-| **Mark 49** | VE dumper | Net -956 VE, 122 trades |
+| Participant | Primary Product | Volume | Role |
+|-------------|----------------|--------|------|
+| **Mark 01** | VEV options | 823 lots bought | Main revenue source — buys our option sells |
+| **Mark 14** | VEV_5000, HP | 898 lots bought | Largest buyer overall (245 on VEV_5000) |
+| **Mark 22** | VEV various | 365 lots | Mixed — buys & sells |
+| **Mark 38** | HP | 166 lots | Noise on HP (fade-able) |
+| **Mark 55** | VE | 208 lots | Losing momentum bot on VE |
+| **Mark 67** | VE | 38 lots | Momentum buyer (small volume) |
+| **Mark 49** | VE | 26 lots | Seller |
 
-#### Strategy — v3 (Final)
+#### Strategy Evolution — v6 → v12 (Final)
 
-**HYDROGEL_PACK — Counterparty-Informed Mean-Reversion MM:**
-- Adapted from ACO strategy (similar market microstructure)
-- EMA(12)-based fair value + AR(1) prediction (coeff=-0.12) + book imbalance
-- Counterparty signals: Follow Mark 14 direction (±2.5 fair bias), fade Mark 38
-- Multi-level quoting: L1 at spread=7, L2 at offset=4
-- Base size 50, inventory skew 0.04/unit, cooldown 100
-- EOD liquidation at ts > 985,000
+| Version | Total P&L | Max DD | Key Change |
+|---------|-----------|--------|------------|
+| v6 (baseline) | +25,220 | 16,085 | Mid-based VEV quoting, EMA+AR HP |
+| v7 | +25,220 | 16,085 | Same code re-uploaded |
+| v8 | ~25,200 | ~16,500 | Minor HP parameter tuning |
+| v9 | ~25,200 | ~16,500 | VEV velocity protection added |
+| v10 | +26,411 | 16,984 | **Inside-best HP, Mark 01 detection, TTE-based EOD** |
+| v11 | +25,814 | 15,475 | Delta-hedge VE (price skew) — **VE lost -647** |
+| **v12** | **+26,309** | **16,826** | **Size-only VE hedge — fixed v11's VE loss** |
+| v13 | +23,936 | 13,327 | Mark 67/55 VE signals — **VE lost -2,310 (reverted)** |
 
-**VELVETFRUIT_EXTRACT — Disabled (Price Tracking Only):**
-- Market-making structurally unprofitable in 5-tick spread
-- Tested: full MM (-33k), take-only (-10k), minimal quotes (-8k) — all negative
-- Root cause: adverse selection in tight spread with 15-19 std daily moves
-- Kept price tracking for VEV vol estimation
+**v12 = Final production version (+26,309)**
 
-**VEV Vouchers — Mid-Based Market Making (ATM Strikes Only):**
-- Active strikes: 5000, 5100, 5200, 5300
-- Market-make around mid with take_edge=3, quote_edge=2
-- Max position capped at 50 (well below 300 limit) to control theta exposure
-- Base size 10 with inventory-proportional sizing
-- Skip penny options (mid < 2.0)
+#### Per-Product P&L Breakdown (v12 vs 518982 competitor)
 
-#### Techniques Tested but Rejected
+| Product | v12 | 518982 | Gap | Notes |
+|---------|-----|--------|-----|-------|
+| HP | +883 | +883 | 0 | ✅ Matched — inside-best quoting |
+| VE | -152 | -9,754 | +9,602 | ✅ We're far better on VE |
+| VEV_4000 | +162 | -1,148 | +1,310 | ✅ We're better — deep ITM MM |
+| VEV_5000 | +2,516 | +5,469 | **-2,953** | ❌ Main alpha leak |
+| VEV_5100 | +9,417 | +9,617 | -200 | ~Matched |
+| VEV_5200 | +7,905 | +7,946 | -41 | ~Matched |
+| VEV_5300 | +4,850 | +4,836 | +14 | ✅ |
+| VEV_5500 | +728 | +728 | 0 | ✅ |
+| **TOTAL** | **+26,309** | **+16,441** | **+9,868** | **We beat 518982 by +60%** |
 
-| Technique | Result | Reason |
-|-----------|--------|--------|
-| VE full market-making (sz=40) | -11k/day | Adverse selection in 5-tick spread |
-| VE take-only (threshold=3) | -3k/day | Still losing on inventory accumulation |
-| VE minimal quotes (sz=5) | -2k/day | Even 5-lot quotes get adversely selected |
-| VEV BS-based pricing | -12k day 3 | TTE calculation wrong across backtester days |
-| VEV position limit 300 | -75k day 3 | Theta decay destroys large positions |
-| HP anchor at 10,000 | 0 P&L | Anchor was wrong — price oscillates around varying mean |
-| HP/VE spread too tight | 0 P&L | Backtester "exceeded limit of 50" = position limit, not order count |
+> v12 captures **89% of theoretical maximum** (+29,637 = best-of-each-product across all versions)
 
-#### Backtester Notes
+#### Architecture (v12)
 
-> **Critical**: The backtester defaults position limits to 50 for unknown products. Must use `--limit` flags:
-> ```bash
-> prosperity4btest trader.py 4 --data /mnt/d/workspace/IMC-4/data --no-progress \
->   --limit HYDROGEL_PACK:200 --limit VELVETFRUIT_EXTRACT:200 \
->   --limit VEV_4000:300 --limit VEV_4500:300 --limit VEV_5000:300 \
->   --limit VEV_5100:300 --limit VEV_5200:300 --limit VEV_5300:300 \
->   --limit VEV_5400:300 --limit VEV_5500:300 --limit VEV_6000:300 \
->   --limit VEV_6500:300
-> ```
+```
+HYDROGEL_PACK:    Inside-best quoting (bb+1, ba-1) + inventory skew + Mark 38 burst
+VELVETFRUIT_EXTRACT: Size-biased delta hedge (no price skew) + passive MM
+VEV Deep ITM:     VE-oracle MM (fair = VE - strike, spread ±7)
+VEV ATM/NTM:      BS-priced taker+maker, adaptive opt_sell edge, Mark 01 detection
+```
 
-#### Final Performance
+**Key parameters:**
+- `SIGMA = 0.0122` (implied vol for BS pricing)
+- `opt_sell = 1.1` (adaptive: 0.25–3.0 range, × 0.55 when Mark 01 active)
+- `VEV_VEL_WARN = 5.0`, `VEV_VEL_STOP = 10.0` (velocity protection thresholds)
+- `VE_SPREAD_HALF = 2`, `VE_QUOTE_SIZE = 5` (VE passive quoting)
+- `pos_reserve = 30` (VEV capacity buffer)
 
-| Metric | Standard Fills | Conservative Fills |
-|--------|---------------|-------------------|
-| **Total P&L** | **+11,653** | **+8,102** |
-| **Sharpe (ann.)** | **17.29** | **10.06** |
-| **Sortino** | **∞** | **9.83** |
-| **Max Drawdown** | 6,342 (1.7%) | 5,570 (1.9%) |
-| **All days +** | ✅ 3/3 | ❌ 2/3 (day 2: -476) |
+#### Structural Risk: Short Gamma Drawdown
 
-| Day | HP | VE | VEV | Total |
-|-----|------|------|------|-------|
-| 1 | +8,000 | 0 | 0 | +8,000 |
-| 2 | +1,709 | 0 | 0 | +1,709 |
-| 3 | +1,944 | 0 | 0 | +1,944 |
+The ~16k drawdown (t=43k→73k) is **unavoidable** — identical across ALL versions including 518982:
+- Aggregate option delta = **-758** (short calls across 5 ATM strikes)
+- VE moves +20 points during spike → -758 × 20 = **-15,160 loss**
+- Loss fully reverses when VE mean-reverts → final P&L positive
+- VE limit = 200 units = can only hedge ~26% of delta exposure
+
+#### Techniques Tested but Rejected (v6→v13)
+
+| Technique | Version | Result | Lesson |
+|-----------|---------|--------|--------|
+| VE price-skew delta hedge | v11 | VE: -647 (vs -50) | Skewing ±2 ticks buys above fair → bleeds -597/day |
+| VE size-only delta hedge | v12 ✅ | VE: -152 | Bias quote sizes, not prices — accumulates hedge at fair |
+| Mark 67 momentum buy VE | v13 | VE: -2,310 | M67 only 38 lots/day. Buying at ask is expensive → false signals cost -75 each |
+| Mark 55 fading on VE | v13 | Included in loss | M55 moves persist > 1 tick, fade at ±2 too tight |
+| Tighter Mark 01 taker (0.40x) | v13 | VEV_5000: -59 | Too aggressive — buys before market justifies it |
+| Lower pos_reserve (20) | v13 | Included in -59 | More exposure ≠ more profit with wrong edge |
+| IV smile scalping (Frankfurt style) | Researched | Not implemented | Requires pre-fitted smile coefficients; risk of overfitting to 4 days of data |
+
+#### External Research: Frankfurt Hedgehogs (2nd Global, Prosperity 3)
+
+Their top strategy: **IV smile scalping** (100-150k/round)
+- Fit quadratic vol smile: `IV = a·m² + b·m + c` where `m = ln(K/S)/√TTE`
+- Pre-fitted coefficients: `[0.27362531, 0.01007566, 0.14876677]`
+- Trade deviations of market price from smile-implied BS theo price
+- Combined with EMA-based mean reversion on underlying
+- Delta hedging was **not** primary PnL driver — IV scalping was
+
+Their 518982 competitor's VE approach (4-layer delta hedge + Mark 67 momentum + Mark 67/49 spread + MM) lost **-9,754 on VE** — a net negative strategy.
+
+#### Supported Libraries (from wiki)
+
+| Library | Version | Used? |
+|---------|---------|-------|
+| `numpy` | 1.24.2 | Imported in v13 (available for future IV smile work) |
+| `pandas` | 1.5.3 | Not used |
+| `math` | stdlib | ✅ BS pricing |
+| `json` | stdlib | ✅ State persistence |
+| `typing` | stdlib | ✅ Type hints |
+| `jsonpickle` | 3.0.1 | Not used |
+
+#### Final Performance (v12 — Official Platform)
+
+| Metric | Value |
+|--------|-------|
+| **Total P&L** | **+26,309 XIRECs** |
+| **Max Drawdown** | 16,826 |
+| **P&L / DD Ratio** | 1.56 |
+| **vs Theoretical Max** | 89% captured |
+| **vs Best Competitor (518982)** | **+60% better** |
+
+| Product | P&L |
+|---------|-----|
+| VEV_5100 | +9,417 |
+| VEV_5200 | +7,905 |
+| VEV_5300 | +4,850 |
+| VEV_5000 | +2,516 |
+| HP | +883 |
+| VEV_5500 | +728 |
+| VEV_4000 | +162 |
+| VE | -152 |
 
 ---
 
@@ -365,16 +393,22 @@ prosperity4btest trader_v2_round2.py 2 --data /mnt/d/workspace/IMC-4/data --no-p
 
 ```
 IMC-4/
-├── trader.py                 # Current algorithm (R4 v3)
-├── trader_v3_round4.py       # R4 version backup
+├── trader.py                 # Current algorithm (R4 v12 — production)
+├── trader_v12_round4.py      # R4 v12 backup (best: +26,309)
+├── trader_v13_round4.py      # R4 v13 backup (reverted: +23,936)
+├── trader_v11_round4.py      # R4 v11 backup (+25,814)
+├── trader_v6_round4.py       # R4 v6 baseline (+25,220)
 ├── trader_v2_round2.py       # R2 version backup (ACO + IPR)
 ├── uploaded_version.py       # Original baseline (R2)
-├── previous_version.py       # Early R2 version
 ├── datamodel.py              # Data model (synced with wiki)
 ├── CHANGELOG.md              # This file
 ├── data/round2/              # Extracted round 2 CSVs
 ├── data/round3/              # Round 3 data
 ├── data/round4/              # Round 4 data (with counterparty IDs)
-└── docs/                     # Documentation
+├── docs/                     # Documentation + wiki
+├── 518982.zip                # Competitor reference log
+├── v7result.zip → v13result.zip  # Official platform result logs
+└── __pycache__/              # Python cache (gitignored)
 ```
+
 

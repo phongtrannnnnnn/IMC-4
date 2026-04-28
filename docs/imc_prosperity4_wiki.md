@@ -215,6 +215,23 @@ class Trader:
 - **Position Limits:** Per-product; orders exceeding the limit are rejected entirely
 - **State Persistence:** Use the `traderData` string (serialize with `json.dumps()` or `jsonpickle.encode()`)
 
+### ⚠️ Backtester Discrepancy (CRITICAL)
+
+The community backtester (`prosperity4btest`) does **NOT** match the official IMC platform's fill/matching engine. Key differences:
+
+| Aspect | Official Platform | `prosperity4btest` |
+|--------|-------------------|---------------------|
+| **Fill engine** | Proprietary; likely considers pro-rata, queue priority, counterparty flow | Simplified; uses historical trade data for fill simulation |
+| **Counterparty interaction** | Bots (Mark 01, Mark 14, Mark 22, etc.) react to your quotes in real time | Bots follow historical scripts; your quotes may not attract flow |
+| **Passive fills** | Resting limit orders attract Mark 01 (option buyer), Mark 38 (HP taker), etc. | Passive fills only happen when historical trades cross your price |
+| **Position limit enforcement** | Strict; invalid orders rejected | May differ in edge cases |
+
+**Evidence**: A submission scoring **+16,441** on the official platform (day 3, Round 4) backtests at **-113,920** locally — a **130k divergence**. The primary cause is that passive option quotes (selling to Mark 01) receive fills on the official platform but NOT in the local backtester.
+
+**Implication**: Strategies that rely on **passive order flow** (market-making VEV options for Mark 01) will be massively underestimated by `prosperity4btest`. Strategies that rely on **aggressive taking** (crossing the book) will backtest more accurately.
+
+> **Recommendation**: Use `prosperity4btest` for directional validation and regression testing, but do NOT trust absolute P&L numbers. The official platform's fill engine is the ground truth.
+
 ### State Persistence Pattern
 ```python
 import json
